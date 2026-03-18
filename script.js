@@ -1,42 +1,30 @@
-import prom from "k6/x/prometheus";
-import { sleep, check } from "k6";
+import prom from 'k6/x/prometheus';
+import { sleep } from 'k6';
 
 export const options = {
-    vus: 2,
-    duration: "20s",
+    vus: 5,
+    duration: '20s',
 };
 
-export default async function () {
-    prom.init("http://prometheus:9090", 500);
+const client = new prom.NewClient({
+    address: 'http://prometheus:9090',
+});
 
-    // ---------- SIMPLE QUERY ----------
-    const samples = prom.query('up');
-    console.log("UP:", samples);
+export default function () {
+    const res = client.Query('avg(rate(node_cpu_seconds_total{mode="idle"}[1m]))');
+    const value = res.asNumber();
 
-    // ---------- RANGE ----------
-    const now = Date.now();
-    const range = prom.queryRange(
-        'rate(node_cpu_seconds_total[1m])',
-        now - 60000,
-        now,
-        5000
+    console.log(`CPU idle: ${value}`);
+
+    const overloaded = client.EvaluateThreshold(
+        '1 - avg(rate(node_cpu_seconds_total{mode="idle"}[1m]))',
+        0.2
     );
 
-    console.log("RANGE size:", range.length);
-
-    // ---------- ASYNC ----------
-    const asyncSamples = await prom.queryAsync('up');
-    console.log("ASYNC:", asyncSamples.length);
-
-    // ---------- WAIT FOR ----------
-    const ready = prom.waitFor('up', 0.5, 5000);
-    console.log("WAIT RESULT:", ready);
-
-    // ---------- CHECK ----------
-    check(null, {
-        "node is up": () =>
-            prom.check('up', (v) => v === 1),
-    });
-
-    sleep(1);
+    if (overloaded) {
+        console.log('🔥 SYSTEM UNDER LOAD — slowing down');
+        sleep(2);
+    } else {
+        sleep(0.5);
+    }
 }

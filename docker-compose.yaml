@@ -16,19 +16,12 @@ services:
       - app
 
   k6:
-    build: .
-    container_name: k6-builder
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: k6
     volumes:
-      - ./output:/output
-    command: ["cp", "/k6", "/output/k6"]
-
-  k6-run:
-    image: grafana/k6
-    container_name: k6-runner
-    volumes:
-      - ./output/k6:/usr/bin/k6
       - ./script.js:/script.js
-    entrypoint: ["/usr/bin/k6"]
-    command: ["run", "/script.js"]
     depends_on:
       - prometheus
+    command: ["run", "/script.js"]

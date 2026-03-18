@@ -2,8 +2,6 @@ package prometheusx
 
 import (
 	"context"
-	"fmt"
-	_ "net/http"
 	"time"
 
 	"github.com/grafana/sobek"
@@ -45,19 +43,24 @@ func (m *ModuleInstance) NewClientCtor(call sobek.ConstructorCall) *sobek.Object
 			common.Throw(rt, err)
 		}
 	}
-	// build API client
+
 	address := "http://localhost:9090"
 	if v, ok := cfg["address"].(string); ok && v != "" {
 		address = v
 	}
+
 	client, err := api.NewClient(api.Config{Address: address})
 	if err != nil {
-		common.Throw(rt, fmt.Errorf("failed to create prom client: %w", err))
+		common.Throw(rt, err)
 	}
-	promAPI := v1.NewAPI(client)
 
-	pc := &PromClient{api: promAPI}
-	obj := rt.ToValue(pc).ToObject(rt)
+	api := v1.NewAPI(client)
+	pc := &PromClient{api: api}
+
+	obj := rt.NewObject()
+	_ = obj.Set("query", pc.Query)
+	_ = obj.Set("evaluateThreshold", pc.EvaluateThreshold)
+
 	return obj
 }
 
@@ -65,89 +68,33 @@ type PromClient struct {
 	api v1.API
 }
 
-func (p *PromClient) Query(query string) (*QueryResult, error) {
+func (p *PromClient) Query(query string) float64 {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	res, warnings, err := p.api.Query(ctx, query, time.Now())
-	if err != nil {
-		return nil, fmt.Errorf("prometheus query error: %w", err)
-	}
-	_ = warnings // ignore for now
-	qr := &QueryResult{value: res}
-	return qr, nil
-}
 
-func (p *PromClient) QueryRange(query string, start, end time.Time, step time.Duration) (model.Value, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	r := v1.Range{Start: start, End: end, Step: step}
-	res, warnings, err := p.api.QueryRange(ctx, query, r)
+	res, _, err := p.api.Query(ctx, query, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("prometheus range query error: %w", err)
+		panic(err)
 	}
-	_ = warnings
-	return res, nil
-}
 
-func (p *PromClient) EvaluateThreshold(query string, threshold float64) (bool, error) {
-	qr, err := p.Query(query)
-	if err != nil {
-		return false, err
-	}
-	v, err := qr.AsNumber()
-	if err != nil {
-		return false, nil
-	}
-	return v > threshold, nil
-}
-
-type QueryResult struct {
-	value model.Value
-}
-
-func (qr *QueryResult) AsNumber() (float64, error) {
-	switch qr.value.Type() {
+	switch res.Type() {
 	case model.ValScalar:
-		s, ok := qr.value.(*model.Scalar)
-		if !ok {
-			return 0, fmt.Errorf("invalid scalar type")
-		}
-		return float64(s.Value), nil
+		s := res.(*model.Scalar)
+		return float64(s.Value)
+
 	case model.ValVector:
-		v, ok := qr.value.(model.Vector)
-		if !ok {
-			return 0, fmt.Errorf("invalid vector type")
-		}
+		v := res.(model.Vector)
 		if len(v) == 0 {
-			return 0, fmt.Errorf("empty vector")
+			return 0
 		}
-		return float64(v[0].Value), nil
+		return float64(v[0].Value)
+
 	default:
-		return 0, fmt.Errorf("unsupported result type: %s", qr.value.Type().String())
+		panic("unsupported type")
 	}
 }
 
-func (qr *QueryResult) AsSamples() ([]map[string]any, error) {
-	if qr.value.Type() != model.ValVector {
-		return nil, fmt.Errorf("AsSamples: not a vector result")
-	}
-	v, ok := qr.value.(model.Vector)
-	if !ok {
-		return nil, fmt.Errorf("invalid vector type")
-	}
-	out := make([]map[string]any, 0, len(v))
-	for _, s := range v {
-		m := make(map[string]any)
-		met := make(map[string]string)
-		for k, val := range s.Metric {
-			met[string(k)] = string(val)
-		}
-		m["metric"] = met
-		m["value"] = float64(s.Value)
-		out = append(out, m)
-	}
-	return out, nil
+func (p *PromClient) EvaluateThreshold(query string, threshold float64) bool {
+	v := p.Query(query)
+	return v > threshold
 }
-
-var _ = func() any { return &PromClient{} }
-var _ = func() any { return &QueryResult{} }
